@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "libs/curl/curl.h"
 #include "json.h"
 
@@ -10,29 +11,43 @@
 #define PUT 4
 #define PATCH 5
 
+#define SECONDS_PER_HOUR 3600
+
 struct string {
   char* ptr;
   size_t len;
 };
 
-struct authorizations {
+typedef struct AuthTokens {
   char* access;
   char* refresh;
-};
+  time_t last_refresh;
+} AuthTokens;
 
-void init_auth(struct authorizations* auth) {
+void init_auth(struct AuthTokens* auth) {
     auth->access = malloc(1);
+    if(!auth->access) {
+      fprintf(stderr, "malloc() failed\n");
+      exit(EXIT_FAILURE);
+    }
     auth->refresh = malloc(1);
+    if(!auth->access) {
+      fprintf(stderr, "malloc() failed\n");
+      exit(EXIT_FAILURE);
+    }
     auth->access[0] = '\0';
     auth->refresh[0] = '\0';
+    auth->last_refresh = 0;
 }
+
 
 char* concat(const char* s1, const char* s2)
 {
     char* result;
     result = malloc(strlen(s1)+strlen(s2)+1);//+1 for the zero-terminator
     if(!result) {
-        exit(1);
+        fprintf(stderr, "malloc() failed\n");
+        exit(EXIT_FAILURE);
     }
     strcpy(result, s1);
     strcat(result, s2);
@@ -43,11 +58,36 @@ char* concat(const char* s1, const char* s2)
 char* concat2(char* s1, const char* s2) {
   s1 = realloc(s1, strlen(s1) + strlen(s2) + 1);//+1 for the zero-terminator
   if(!s1)  {
-    exit(1);
+    fprintf(stderr, "realloc() failed\n");
+    exit(EXIT_FAILURE);
   }
   strcat(s1, s2);
   printf("CONCAT2: %s\n", s1);
   return(s1);
+}
+
+/**
+ * checks for an error in the API response
+ */
+int responseError(json_value* value) {
+  if(json_contains_key(value, "error") >= 0) {
+    return 1;
+  } else {
+    return 0;
+  }
+}
+
+/**
+ * reports the error in the provided json_value to stdout
+ */
+void report_error(json_value* value) {
+  int errPos = json_contains_key(value, "error");
+  int errDescPos = json_contains_key(value, "error_description");
+  if(errPos >= 0 && errDescPos >= 0) {
+    //we will assume these are strings
+    printf("ERROR> %s ::: %s\n", value->u.object.values[errPos].value->u.string.ptr,
+                              value->u.object.values[errDescPos].value->u.string.ptr);
+  }
 }
 
 void init_string(struct string* s) {
@@ -75,7 +115,7 @@ size_t writefunc(void *ptr, size_t size, size_t nmemb, struct string *s)
   return size*nmemb;
 }
 
-void callApi(char* endpoint, int method, char* queryParams, char* body, struct string* s) {
+int callApi(char* endpoint, int method, char* queryParams, char* body, struct string* s) {
   CURL *curl;
   CURLcode res;
   curl = curl_easy_init();
@@ -111,15 +151,25 @@ void callApi(char* endpoint, int method, char* queryParams, char* body, struct s
     res = curl_easy_perform(curl);
     long http_code = 0;
     /* Check for errors */
-    if(res != CURLE_OK)
+    if(res != CURLE_OK) {
       fprintf(stderr, "curl_easy_perform() failed: %s\n",
               curl_easy_strerror(res));
+      curl_easy_cleanup(curl);
+      return 2;
+    }
 
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     printf("\nHTTP status: %lu\n", http_code);
 
     /* always cleanup */
     curl_easy_cleanup(curl);
+    if(http_code < 200 || http_code > 299) {
+      return 3;
+    } else {
+      return 0;
+    }
+  } else {
+    return 1;
   }
 }
 
@@ -182,7 +232,7 @@ char* getPin(char* apiKey) {
  *
  * Returns empty tokens if the call fails
  **/
-struct authorizations getTokens(char* apiKey, char* authCode) {
+AuthTokens getTokens(char* apiKey, char* authCode) {
     char* body = "grant_type=ecobeePin&code=";
     body = concat(body, authCode);
     body = concat2(body, "&client_id=");
@@ -190,7 +240,7 @@ struct authorizations getTokens(char* apiKey, char* authCode) {
     struct string s;
     init_string(&s);
     callApi("token", POST, "", body, &s);
-    struct authorizations tokens;
+    AuthTokens tokens;
     init_auth(&tokens);
     if(s.ptr != NULL) {
         json_char* json = (json_char*)s.ptr;
@@ -199,17 +249,20 @@ struct authorizations getTokens(char* apiKey, char* authCode) {
             fprintf(stderr, "Unable to parse data\n");
             exit(1);
         }
-        int authPos = json_contains_key(value, "access_token");
-        if(authPos >= 0 && value->u.object.values[authPos].value->type == json_string) {
-            char* tmp = tokens.access;
-            tokens.access = concat(tokens.access, value->u.object.values[authPos].value->u.string.ptr);
-            free(tmp);
-        }
-        int refPos = json_contains_key(value, "refresh_token");
-        if(refPos >= 0 && value->u.object.values[refPos].value->type == json_string) {
-            char* tmp = tokens.refresh;
-            tokens.refresh = concat(tokens.refresh, value->u.object.values[refPos].value->u.string.ptr);
-            free(tmp);
+        if(!responseError(value)) {
+          int authPos = json_contains_key(value, "access_token");
+          if(authPos >= 0 && value->u.object.values[authPos].value->type == json_string) {
+              free(tokens.access);
+              tokens.access = concat("", value->u.object.values[authPos].value->u.string.ptr);
+          }
+          int refPos = json_contains_key(value, "refresh_token");
+          if(refPos >= 0 && value->u.object.values[refPos].value->type == json_string) {
+              free(tokens.access);
+              tokens.refresh = concat(tokens.refresh, value->u.object.values[refPos].value->u.string.ptr);
+          }
+          tokens.last_refresh = time(NULL);
+        } else {
+          report_error(value);
         }
     }
     free(body);
@@ -224,7 +277,7 @@ struct authorizations getTokens(char* apiKey, char* authCode) {
  *
  * Returns 0 on success, 1 if there was an error
  */
-int refreshAuthToken(char* apiKey, struct authorizations *tokens) {
+int refreshAuthToken(char* apiKey, AuthTokens *tokens) {
     char* body = "grant_type=refresh_token&code=";
     body = concat(body, tokens->refresh);
     body = concat2(body, "&client_id=");
@@ -242,12 +295,15 @@ int refreshAuthToken(char* apiKey, struct authorizations *tokens) {
         if(!responseError(value)) {
           int authPos = json_contains_key(value, "access_token");
           if(authPos >= 0 && value->u.object.values[authPos].value->type == json_string) {
+              free(tokens->access);
               tokens->access = concat("", value->u.object.values[authPos].value->u.string.ptr);
           }
           int refPos = json_contains_key(value, "refresh_token");
           if(refPos >= 0 && value->u.object.values[refPos].value->type == json_string) {
+              free(tokens->refresh);
               tokens->refresh = concat("", value->u.object.values[refPos].value->u.string.ptr);
           }
+          tokens->last_refresh = time(NULL);
         } else {
           report_error(value);
         }
@@ -255,32 +311,39 @@ int refreshAuthToken(char* apiKey, struct authorizations *tokens) {
     free(body);
 }
 
-/**
- * checks for an error in the API response
- */
-bool responseError(json_value* value) {
-  if(json_contains_key(value, "error") >= 0) {
-    return true;
+int requireAuthRefresh(AuthTokens* tokens) {
+  if((tokens->last_refresh + SECONDS_PER_HOUR) < time(NULL)) {
+    return 1;
   } else {
-    return false;
+    return 0;
   }
 }
 
-/**
- * reports the error in the provided json_value to stdout
- */
-void report_error(json_value* value) {
-  int errPos = json_contains_key(value, "error");
-  int errDescPos = json_contains_key(value, "error_description");
-  if(errPos >= 0 && errDescPos >= 0) {
-    //we will assume these are strings
-    printf("ERROR: %s: %s\n", value->u.object.values[errPos].value->u.string.ptr,
-                              value->u.object.values[errDescPos].value->u.string.ptr);
+AuthTokens* loadAuthTokens() {
+  FILE* fp;
+  char* line = NULL;
+  size_t len = 0;
+  ssize_t read;
+  puts("Reading auth tokens from file");
+  if((fp = fopen("./keys", "r"))) {
+    if((read = getline(&line, &len, fp)) != -1) {
+      //load tokens here
+    }
   }
+  fclose(fp);
+  if(line)
+    free(line);
+  return NULL;
 }
 
 int main(void)
 {
+  time_t rawtime;
+  struct tm* timeinfo;
+
+  time ( &rawtime );
+  timeinfo = localtime ( &rawtime );
+  printf ( "Current local time and date: %s", asctime (timeinfo) );
   char* api_key = "D88iw9CZgDGqoaJZ0PUjwbIYM11eHZD4";
   curl_global_init(CURL_GLOBAL_DEFAULT);
   printf("API Key is: %s\n", api_key);
@@ -290,7 +353,7 @@ int main(void)
     exit(1);
   }
   printf("Access Code: %s\n", pin);
-  struct authorizations tokens = getTokens(api_key, pin);
+  AuthTokens tokens = getTokens(api_key, pin);
   if(strlen(tokens.access) == 0 || strlen(tokens.refresh) == 0) {
     printf("Failed to authenticate on step 2");
     exit(1);
