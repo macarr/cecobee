@@ -40,6 +40,8 @@ void init_auth(struct AuthTokens* auth) {
     auth->last_refresh = 0;
 }
 
+AuthTokens currentTokens;
+
 
 char* concat(const char* s1, const char* s2)
 {
@@ -312,7 +314,7 @@ int refreshAuthToken(char* apiKey, AuthTokens *tokens) {
 }
 
 int requireAuthRefresh(AuthTokens* tokens) {
-  if((tokens->last_refresh + SECONDS_PER_HOUR) < time(NULL)) {
+  if(difftime(time(NULL), tokens->last_refresh) > SECONDS_PER_HOUR) {
     return 1;
   } else {
     return 0;
