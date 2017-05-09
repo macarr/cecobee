@@ -1,0 +1,13 @@
+access_denied:302:Authorization has been denied by the user. This is only used in the Authorization Code authorization browser redirect.
+invalid_request:400:The request is malformed. Check parameters.
+invalid_client:401:Authentication error, invalid authentication method, lack of credentials, etc.
+invalid_grant:400:The authorization grant, token or credentials are expired or invalid.
+unauthorized_client:400:The authenticated client is not authorized to use this authorization grant type.
+unsupported_grant_type:400:The authorization grant type is not supported by the authorization server.
+invalid_scope:400:The requested scope is invalid, unknown, malformed, or exceeds the scope granted by the resource owner.
+not_supported:400:HTTP method not supported for this request.
+account_locked:401:Account is temporarily locked.
+account_disabled:401:Account is disabled.
+authorization_pending:401:Waiting for user to authorize application.
+authorization_expired:401:The authorization has expired waiting for user to authorize.
+slow_down:401:Slow down polling to the requested interval.
