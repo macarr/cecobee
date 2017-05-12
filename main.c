@@ -13,6 +13,10 @@
 
 #define SECONDS_PER_HOUR 3600
 
+#define API_KEY "D88iw9CZgDGqoaJZ0PUjwbIYM11eHZD4"
+
+#define KEYFILE "./keys"
+
 struct string {
   char* ptr;
   size_t len;
@@ -53,7 +57,6 @@ char* concat(const char* s1, const char* s2)
     }
     strcpy(result, s1);
     strcat(result, s2);
-    printf("CONCAT: %s\n", result);
     return result;
 }
 
@@ -64,7 +67,6 @@ char* concat2(char* s1, const char* s2) {
     exit(EXIT_FAILURE);
   }
   strcat(s1, s2);
-  printf("CONCAT2: %s\n", s1);
   return(s1);
 }
 
@@ -193,12 +195,90 @@ int json_contains_key(json_value* json, char* key) {
 }
 
 /**
+ * pull Authtokens from the keyfile
+ */
+int loadAuthTokens(AuthTokens* tokens) {
+  FILE* fp;
+  char* line = NULL;
+  size_t len = 0;
+  int pos = 0;
+  ssize_t read;
+  puts("Reading auth tokens from file");
+  if((fp = fopen(KEYFILE, "r"))) {
+    while((read = getline(&line, &len, fp)) != -1) {
+      //Line1 is the access token, Line2 is the refresh token, Line3 is the last refresh time
+      line[strcspn(line, "\n")] = 0;
+      if(strlen(line) == 0) {
+        return 1;
+      }
+      switch(pos) {
+      case 0:
+        tokens->access = concat("", line);
+        break;
+      case 1:
+        tokens->refresh = concat("", line);
+        break;
+      case 2:
+        tokens->last_refresh = atoi(line);
+        break;
+      default:
+        break;
+      }
+      pos++;
+    }
+    if(pos < 3) {
+      puts("Keyfile corrupted, a value was missing");
+      return 1;
+    }
+  } else {
+    puts("Keyfile does not exist");
+    return 1;
+  }
+  fclose(fp);
+  if(line)
+    free(line);
+  return 0;
+}
+
+/**
+ * store Authtokens in the keyfile
+ */
+void persistAuthTokens(AuthTokens* tokens) {
+  FILE* fp;
+  if((fp = fopen(KEYFILE, "w"))) {
+    fprintf(fp, "%s\n", tokens->access);
+    fprintf(fp, "%s\n", tokens->refresh);
+    fprintf(fp, "%d\n", (int)tokens->last_refresh);
+  } else {
+    fclose(fp);
+    if((fp = fopen("rescue", "w"))) {
+      puts("Error creating keyfile, attempting to rescue");
+      fprintf(fp, "%s\n", tokens->access);
+      fprintf(fp, "%s\n", tokens->refresh);
+      fprintf(fp, "%d\n", (int)tokens->last_refresh);
+    } else {
+      puts("Critical error: rescue failed. You will need to re-pair your application online");
+      fclose(fp);
+    }
+  }
+  fclose(fp);
+}
+
+int requireAuthRefresh(AuthTokens* tokens) {
+  if(difftime(time(NULL), tokens->last_refresh) > SECONDS_PER_HOUR) {
+    return 1;
+  } else {
+    return 0;
+  }
+}
+
+/**
  * step one of authorizing the app
  **/
-char* getPin(char* apiKey) {
-  puts("Getting PIN");
+char* getPin() {
+    puts("Getting PIN");
     char* queryParam = "response_type=ecobeePin&client_id=";
-    queryParam = concat(queryParam, apiKey);
+    queryParam = concat(queryParam, API_KEY);
     queryParam = concat2(queryParam, "&scope=smartWrite");
     printf("Query params constructed: %s\n", queryParam);
     struct string s;
@@ -234,16 +314,15 @@ char* getPin(char* apiKey) {
  *
  * Returns empty tokens if the call fails
  **/
-AuthTokens getTokens(char* apiKey, char* authCode) {
+void getTokens(char* authCode, AuthTokens* tokens) {
+    puts("Using PIN to retrieve Authorizations");
     char* body = "grant_type=ecobeePin&code=";
     body = concat(body, authCode);
     body = concat2(body, "&client_id=");
-    body = concat2(body, apiKey);
+    body = concat2(body, API_KEY);
     struct string s;
     init_string(&s);
     callApi("token", POST, "", body, &s);
-    AuthTokens tokens;
-    init_auth(&tokens);
     if(s.ptr != NULL) {
         json_char* json = (json_char*)s.ptr;
         json_value* value = json_parse(json, s.len);
@@ -254,21 +333,19 @@ AuthTokens getTokens(char* apiKey, char* authCode) {
         if(!responseError(value)) {
           int authPos = json_contains_key(value, "access_token");
           if(authPos >= 0 && value->u.object.values[authPos].value->type == json_string) {
-              free(tokens.access);
-              tokens.access = concat("", value->u.object.values[authPos].value->u.string.ptr);
+              tokens->access = concat("", value->u.object.values[authPos].value->u.string.ptr);
           }
           int refPos = json_contains_key(value, "refresh_token");
           if(refPos >= 0 && value->u.object.values[refPos].value->type == json_string) {
-              free(tokens.access);
-              tokens.refresh = concat(tokens.refresh, value->u.object.values[refPos].value->u.string.ptr);
+              tokens->refresh = concat("", value->u.object.values[refPos].value->u.string.ptr);
           }
-          tokens.last_refresh = time(NULL);
+          tokens->last_refresh = time(NULL);
         } else {
           report_error(value);
         }
     }
+    persistAuthTokens(tokens);
     free(body);
-    return tokens;
 }
 
 /**
@@ -279,11 +356,12 @@ AuthTokens getTokens(char* apiKey, char* authCode) {
  *
  * Returns 0 on success, 1 if there was an error
  */
-int refreshAuthToken(char* apiKey, AuthTokens *tokens) {
+int refreshAuthToken(AuthTokens *tokens) {
+    puts("Refreshing Authorizations");
     char* body = "grant_type=refresh_token&code=";
     body = concat(body, tokens->refresh);
     body = concat2(body, "&client_id=");
-    body = concat2(body, apiKey);
+    body = concat2(body, API_KEY);
     struct string s;
     init_string(&s);
     callApi("token", POST, "", body,&s);
@@ -310,60 +388,34 @@ int refreshAuthToken(char* apiKey, AuthTokens *tokens) {
           report_error(value);
         }
     }
+    persistAuthTokens(tokens);
     free(body);
-}
-
-int requireAuthRefresh(AuthTokens* tokens) {
-  if(difftime(time(NULL), tokens->last_refresh) > SECONDS_PER_HOUR) {
-    return 1;
-  } else {
-    return 0;
-  }
-}
-
-AuthTokens* loadAuthTokens() {
-  FILE* fp;
-  char* line = NULL;
-  size_t len = 0;
-  ssize_t read;
-  puts("Reading auth tokens from file");
-  if((fp = fopen("./keys", "r"))) {
-    if((read = getline(&line, &len, fp)) != -1) {
-      //load tokens here
-    }
-  }
-  fclose(fp);
-  if(line)
-    free(line);
-  return NULL;
 }
 
 int main(void)
 {
-  time_t rawtime;
-  struct tm* timeinfo;
-
-  time ( &rawtime );
-  timeinfo = localtime ( &rawtime );
-  printf ( "Current local time and date: %s", asctime (timeinfo) );
-  char* api_key = "D88iw9CZgDGqoaJZ0PUjwbIYM11eHZD4";
   curl_global_init(CURL_GLOBAL_DEFAULT);
-  printf("API Key is: %s\n", api_key);
-  char* pin = getPin(api_key);
-  if(strlen(pin) == 0) {
-    printf("Failed to authenticate on step 1");
-    exit(1);
-  }
-  printf("Access Code: %s\n", pin);
-  AuthTokens tokens = getTokens(api_key, pin);
-  if(strlen(tokens.access) == 0 || strlen(tokens.refresh) == 0) {
-    printf("Failed to authenticate on step 2");
-    exit(1);
+  printf("API Key is: %s\n", API_KEY);
+  AuthTokens tokens;
+  if(loadAuthTokens(&tokens) != 0) {
+    char* pin = getPin();
+    if(strlen(pin) == 0) {
+      printf("Failed to authenticate on step 1");
+      exit(1);
+    }
+    printf("Access Code: %s\n", pin);
+    getTokens(pin, &tokens);
+    if(strlen(tokens.access) == 0 || strlen(tokens.refresh) == 0) {
+      printf("Failed to authenticate on step 2");
+      exit(1);
+    }
   }
   printf("AccessToken: %s\n", tokens.access);
   printf("RefreshToken: %s\n", tokens.refresh);
-  refreshAuthToken(api_key, &tokens);
-  printf("New AccessToken: %s\n", tokens.access);
-  printf("New RefreshToken: %s\n", tokens.refresh);
+  if(requireAuthRefresh(&tokens) == 1) {
+    refreshAuthToken(&tokens);
+    printf("New AccessToken: %s\n", tokens.access);
+    printf("New RefreshToken: %s\n", tokens.refresh);
+  }
   curl_global_cleanup();
 }
