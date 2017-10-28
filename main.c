@@ -167,7 +167,7 @@ char* getPin() {
     printf("Query params constructed: %s\n", queryParam);
     string s;
     init_string(&s);
-    callApi("authorize", GET, queryParam, "", &s);
+    callApi("authorize", GET, queryParam, "", &s, 0, NULL);
     if(s.ptr != NULL) {
         json_char* json = (json_char*)s.ptr;
         json_value* value = json_parse(json, s.len);
@@ -206,7 +206,7 @@ void getTokens(char* authCode, AuthTokens* tokens) {
     body = concat2(body, API_KEY);
     string s;
     init_string(&s);
-    callApi("token", POST, "", body, &s);
+    callApi("token", POST, "", body, &s, 0, NULL);
     if(s.ptr != NULL) {
         json_char* json = (json_char*)s.ptr;
         json_value* value = json_parse(json, s.len);
@@ -248,7 +248,7 @@ int refreshAuthToken(AuthTokens *tokens) {
     body = concat2(body, API_KEY);
     string s;
     init_string(&s);
-    callApi("token", POST, "", body,&s);
+    callApi("token", POST, "", body,&s, 0, NULL);
     if(s.ptr != NULL) {
         json_char* json = (json_char*)s.ptr;
         json_value* value = json_parse(json, s.len);
@@ -276,6 +276,37 @@ int refreshAuthToken(AuthTokens *tokens) {
     free(body);
 }
 
+/**
+ * Get thermostat data (not useful for now)
+ */
+void getThermostats(AuthTokens *tokens) {
+    puts("Getting thermostat data");
+    char* body = "format=json&body={\"selection\":{\"selectionType\":\"registered\",\"selectionMatch\":\"\",\"includeRuntime\":\"true\"}}";
+    header auth;
+    init_header(&auth);
+    setHeaderName(&auth, "Authorization");
+    setHeaderValue(&auth, concat("Bearer ", tokens->access));
+    header content;
+    init_header(&content);
+    setHeaderName(&content, "Content-Type");
+    setHeaderValue(&content, "text/json");
+    header headers[2] = {auth, content};
+    string s;
+    init_string(&s);
+    callApi("1/thermostat", GET, body, "", &s, 2, headers);
+    if(s.ptr != NULL) {
+        json_char* json = (json_char*)s.ptr;
+        json_value* value = json_parse(json, s.len);
+        if (value == NULL) {
+          fprintf(stderr, "Unable to parse data\n");
+          exit(1);
+        }
+        if(!responseError(value)) {
+            process_value(value, 0);
+        }
+    }
+}
+
 int main(void)
 {
   curl_global_init(CURL_GLOBAL_DEFAULT);
@@ -301,5 +332,6 @@ int main(void)
     printf("New AccessToken: %s\n", tokens.access);
     printf("New RefreshToken: %s\n", tokens.refresh);
   }
+  getThermostats(&tokens);
   curl_global_cleanup();
 }
