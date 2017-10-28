@@ -2,25 +2,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include "libs/curl/curl.h"
 #include "json.h"
-
-#define GET 1
-#define POST 2
-#define DELETE 3
-#define PUT 4
-#define PATCH 5
+#include "include/api_methods.h"
+#include "libs/curl/curl.h"
+#include "include/utils.h"
 
 #define SECONDS_PER_HOUR 3600
 
 #define API_KEY "D88iw9CZgDGqoaJZ0PUjwbIYM11eHZD4"
 
 #define KEYFILE "./keys"
-
-struct string {
-  char* ptr;
-  size_t len;
-};
 
 typedef struct AuthTokens {
   char* access;
@@ -46,28 +37,21 @@ void init_auth(struct AuthTokens* auth) {
 
 AuthTokens currentTokens;
 
-
-char* concat(const char* s1, const char* s2)
-{
-    char* result;
-    result = malloc(strlen(s1)+strlen(s2)+1);//+1 for the zero-terminator
-    if(!result) {
-        fprintf(stderr, "malloc() failed\n");
-        exit(EXIT_FAILURE);
+/**
+ * checks to see if the provided json_object contains the provided key
+ **/
+int json_contains_key(json_value* json, char* key) {
+    if(json->type != json_object) {
+        return -1;
     }
-    strcpy(result, s1);
-    strcat(result, s2);
-    return result;
-}
-
-char* concat2(char* s1, const char* s2) {
-  s1 = realloc(s1, strlen(s1) + strlen(s2) + 1);//+1 for the zero-terminator
-  if(!s1)  {
-    fprintf(stderr, "realloc() failed\n");
-    exit(EXIT_FAILURE);
-  }
-  strcat(s1, s2);
-  return(s1);
+    int numKeys = json->u.object.length;
+    int i;
+    for(i = 0; i < numKeys; i++) {
+        if(strcmp(key, json->u.object.values[i].name) == 0) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 /**
@@ -92,106 +76,6 @@ void report_error(json_value* value) {
     printf("ERROR> %s ::: %s\n", value->u.object.values[errPos].value->u.string.ptr,
                               value->u.object.values[errDescPos].value->u.string.ptr);
   }
-}
-
-void init_string(struct string* s) {
-  s->len = 0;
-  s->ptr = malloc(s->len+1);
-  if (s->ptr == NULL) {
-    fprintf(stderr, "malloc() failed\n");
-    exit(EXIT_FAILURE);
-  }
-  s->ptr[0] = '\0';
-}
-
-size_t writefunc(void *ptr, size_t size, size_t nmemb, struct string *s)
-{
-  size_t new_len = s->len + size*nmemb;
-  s->ptr = realloc(s->ptr, new_len+1);
-  if (s->ptr == NULL) {
-    fprintf(stderr, "realloc() failed\n");
-    exit(EXIT_FAILURE);
-  }
-  memcpy(s->ptr+s->len, ptr, size*nmemb);
-  s->ptr[new_len] = '\0';
-  s->len = new_len;
-
-  return size*nmemb;
-}
-
-int callApi(char* endpoint, int method, char* queryParams, char* body, struct string* s) {
-  CURL *curl;
-  CURLcode res;
-  curl = curl_easy_init();
-  if(curl) {
-    //init_string(s);
-    char* url = "https://api.ecobee.com/";
-    url = concat(url, endpoint);
-    url = concat2(url, "?");
-    url = concat2(url, queryParams);
-    printf("Url and Queries: %s\nBody:%s\n", url, body);
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writefunc);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, s);
-    switch(method) {
-    case POST:
-        curl_easy_setopt(curl, CURLOPT_POST, 1);
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
-        break;
-    case DELETE:
-        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
-        break;
-    case PUT:
-        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PUT");
-        break;
-    case PATCH:
-        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PATCH");
-        break;
-    default:
-        break;
-        /* Does a GET by default, don't have to do anything here and we'll assume invalid methods are GETs */
-    }
-    /* Perform the request, res will get the return code */
-    res = curl_easy_perform(curl);
-    long http_code = 0;
-    /* Check for errors */
-    if(res != CURLE_OK) {
-      fprintf(stderr, "curl_easy_perform() failed: %s\n",
-              curl_easy_strerror(res));
-      curl_easy_cleanup(curl);
-      return 2;
-    }
-
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-    printf("\nHTTP status: %lu\n", http_code);
-
-    /* always cleanup */
-    curl_easy_cleanup(curl);
-    if(http_code < 200 || http_code > 299) {
-      return 3;
-    } else {
-      return 0;
-    }
-  } else {
-    return 1;
-  }
-}
-
-/**
- * checks to see if the provided json_object contains the provided key
- **/
-int json_contains_key(json_value* json, char* key) {
-    if(json->type != json_object) {
-        return -1;
-    }
-    int numKeys = json->u.object.length;
-    int i;
-    for(i = 0; i < numKeys; i++) {
-        if(strcmp(key, json->u.object.values[i].name) == 0) {
-            return i;
-        }
-    }
-    return -1;
 }
 
 /**
@@ -281,7 +165,7 @@ char* getPin() {
     queryParam = concat(queryParam, API_KEY);
     queryParam = concat2(queryParam, "&scope=smartWrite");
     printf("Query params constructed: %s\n", queryParam);
-    struct string s;
+    string s;
     init_string(&s);
     callApi("authorize", GET, queryParam, "", &s);
     if(s.ptr != NULL) {
@@ -320,7 +204,7 @@ void getTokens(char* authCode, AuthTokens* tokens) {
     body = concat(body, authCode);
     body = concat2(body, "&client_id=");
     body = concat2(body, API_KEY);
-    struct string s;
+    string s;
     init_string(&s);
     callApi("token", POST, "", body, &s);
     if(s.ptr != NULL) {
@@ -362,7 +246,7 @@ int refreshAuthToken(AuthTokens *tokens) {
     body = concat(body, tokens->refresh);
     body = concat2(body, "&client_id=");
     body = concat2(body, API_KEY);
-    struct string s;
+    string s;
     init_string(&s);
     callApi("token", POST, "", body,&s);
     if(s.ptr != NULL) {
